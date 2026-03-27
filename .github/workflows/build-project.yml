@@ -22,7 +22,7 @@ jobs:
 
       # 3. Restore NuGet packages
       - name: Restore NuGet packages
-        run: dotnet restore FileRedirector.sln
+        run: dotnet restore FileRedirector.slnx
 
       # 4. Build the project
       - name: Build
