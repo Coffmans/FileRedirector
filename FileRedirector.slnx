@@ -1,3 +1,6 @@
 <Solution>
   <Project Path="FileRedirector.csproj" />
+  <Folder Name="/tests/">
+    <Project Path="tests/FileRedirector.Tests/FileRedirector.Tests.csproj" />
+  </Folder>
 </Solution>

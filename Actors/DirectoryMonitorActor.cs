@@ -15,7 +15,6 @@ public class DirectoryMonitorActor : ReceiveActor, IWithTimers
     public ITimerScheduler Timers { get; set; } = null!;
 
     private readonly DatabaseService     _db;
-    private readonly FileTransferService _transfer;
     private readonly IActorRef           _coordinator;
 
     private RedirectJob _job;
@@ -27,24 +26,16 @@ public class DirectoryMonitorActor : ReceiveActor, IWithTimers
     public DirectoryMonitorActor(
         RedirectJob job,
         DatabaseService db,
-        FileTransferService transfer,
         IActorRef coordinator)
     {
         _job         = job;
         _db          = db;
-        _transfer    = transfer;
         _coordinator = coordinator;
 
-        Receive<StartMonitoring>(_ => OnStartMonitoring());
+        // StartMonitoring also carries the latest job definition (sent again after edits)
+        Receive<StartMonitoring>(msg => { _job = msg.Job; OnStartMonitoring(); });
         Receive<StopMonitoring>(_ => OnStopMonitoring());
         Receive<PollNow>(_ => OnPoll());
-
-        // Reload the job definition when the coordinator pushes an update
-        Receive<RedirectJob>(updated =>
-        {
-            _job = updated;
-            RestartTimer();
-        });
     }
 
     protected override void PreStart()
@@ -103,33 +94,27 @@ public class DirectoryMonitorActor : ReceiveActor, IWithTimers
             var capturedJob    = _job;
 
             // Run the async scan on a background thread but pipe result to Self/coordinator
-            var scanTask = _transfer.ListSourceFilesAsync(capturedSource);
+            var scanTask = FileTransferService.ListSourceFilesAsync(capturedSource);
 
             // Pipe completed task as a message
             scanTask.PipeTo(
                 recipient: _coordinator,
                 sender:    Self,
                 success:   files => new FilesDiscovered(capturedJob.Id, capturedSource, files),
-                failure:   ex =>
-                {
-                    LogError($"Scan failed for {capturedSource.Path}: {ex.Message}");
-                    return new FilesDiscovered(capturedJob.Id, capturedSource, new());
-                });
+                // Runs off the actor thread, so only captured values are used here
+                failure:   ex => new ScanFailed(capturedJob.Id, capturedJob.Name, capturedSource,
+                                                ex.GetBaseException().Message));
         }
     }
 
     private void Log(string msg)
-        => Console.WriteLine($"[Monitor:{_job.Name}] {msg}");
-
-    private void LogError(string msg)
-        => Console.Error.WriteLine($"[Monitor:{_job.Name}] ERROR: {msg}");
+        => AppLog.Info($"[Monitor:{_job.Name}] {msg}");
 
     // ─── Props factory ────────────────────────────────────────────────────────
 
     public static Props CreateProps(
         RedirectJob job,
         DatabaseService db,
-        FileTransferService transfer,
         IActorRef coordinator)
-        => Props.Create(() => new DirectoryMonitorActor(job, db, transfer, coordinator));
+        => Props.Create(() => new DirectoryMonitorActor(job, db, coordinator));
 }

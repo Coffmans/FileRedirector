@@ -17,15 +17,6 @@ public enum SourceFileAction
     MarkProcessed  // rename with a suffix like .done or track in DB
 }
 
-public enum JobStatus
-{
-    Idle,
-    Running,
-    Paused,
-    Error,
-    Disabled
-}
-
 public class RedirectJob
 {
     public int Id { get; set; }
@@ -42,6 +33,15 @@ public class RedirectJob
     // Navigation (not stored directly — loaded separately)
     public List<JobSource> Sources { get; set; } = [];
     public List<JobDestination> Destinations { get; set; } = [];
+
+    /// <summary>Deep copy, so the UI and actors never share (and mutate) the same instance.</summary>
+    public RedirectJob Clone()
+    {
+        var copy = (RedirectJob)MemberwiseClone();
+        copy.Sources      = [.. Sources.Select(s => s.Clone())];
+        copy.Destinations = [.. Destinations.Select(d => d.Clone())];
+        return copy;
+    }
 }
 
 public class JobSource
@@ -54,8 +54,11 @@ public class JobSource
 
     // FTP / HTTP credentials
     public string? Username { get; set; }
-    public string? Password { get; set; }   // stored encrypted in DB
+    public string? Password { get; set; }   // plain text in memory; DPAPI-encrypted in the DB
     public bool IsPassive { get; set; } = true;
+    public bool AcceptAnyCertificate { get; set; }   // FTPS only: skip certificate validation
+
+    public JobSource Clone() => (JobSource)MemberwiseClone();
 }
 
 public class JobDestination
@@ -69,8 +72,11 @@ public class JobDestination
 
     // FTP / HTTP credentials
     public string? Username { get; set; }
-    public string? Password { get; set; }
+    public string? Password { get; set; }   // plain text in memory; DPAPI-encrypted in the DB
     public bool IsPassive { get; set; } = true;
+    public bool AcceptAnyCertificate { get; set; }   // FTPS only: skip certificate validation
+
+    public JobDestination Clone() => (JobDestination)MemberwiseClone();
 }
 
 public class ProcessedFile
@@ -80,6 +86,7 @@ public class ProcessedFile
     public string SourcePath { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
     public long FileSizeBytes { get; set; }
+    public long? SourceModifiedTicks { get; set; }   // source LastModified (UTC ticks) at copy time
     public string ProcessedAt { get; set; } = DateTime.UtcNow.ToString("o");
     public bool Success { get; set; }
     public string? ErrorMessage { get; set; }
@@ -91,13 +98,16 @@ public record StartMonitoring(RedirectJob Job);
 public record StopMonitoring(int JobId);
 public record PollNow(int JobId);
 public record FilesDiscovered(int JobId, JobSource Source, List<DiscoveredFile> Files);
+public record ScanFailed(int JobId, string JobName, JobSource Source, string Error);
 public record CopyFile(int JobId, DiscoveredFile File, JobSource Source, List<JobDestination> Destinations, SourceFileAction SourceAction, string? MoveToPath, string? ProcessedSuffix);
-public record FileCopyResult(int JobId, DiscoveredFile File, bool Success, string? Error);
+// Warning: set when the file was delivered but something non-fatal failed (e.g. the source action).
+public record FileCopyResult(int JobId, DiscoveredFile File, bool Success, string? Error, string? Warning = null);
 
+// Passed between actors, so it's immutable once created
 public class DiscoveredFile
 {
-    public string FullPath { get; set; } = string.Empty;
-    public string FileName { get; set; } = string.Empty;
-    public long SizeBytes { get; set; }
-    public DateTime LastModified { get; set; }
+    public string FullPath { get; init; } = string.Empty;
+    public string FileName { get; init; } = string.Empty;
+    public long SizeBytes { get; init; }
+    public DateTime LastModified { get; init; }
 }

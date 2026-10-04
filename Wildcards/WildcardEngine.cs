@@ -29,6 +29,12 @@ namespace FileRedirector.Wildcards;
 /// </summary>
 public static class WildcardEngine
 {
+    // Cache regexes by resolved pattern string. Time-based tokens (@SS, @TICK, @GUID, dates) produce a
+    // new pattern each time, so the cache is bounded; patterns are small, so they aren't compiled.
+    private const int MaxCachedPatterns = 256;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, System.Text.RegularExpressions.Regex>
+        _regexCache = new();
+
     private static readonly (string Token, Func<DateTime, string?, string> Resolver)[] Tokens =
     [
         ("@ORIGNAME", (dt, fn) => fn ?? string.Empty),
@@ -55,25 +61,27 @@ public static class WildcardEngine
         ("@GUID",     (dt, _)  => Guid.NewGuid().ToString("N")[..8]),
     ];
 
+    // Single-pass matcher. Alternatives are ordered longest-first so e.g. "@MIN" wins over "@M"
+    // and "@DOWS" over "@D". A single pass also means values substituted in (such as an
+    // original filename containing '@') are never re-scanned for tokens.
+    private static readonly System.Text.RegularExpressions.Regex TokenRegex = new(
+        string.Join("|", Tokens
+            .Select(t => t.Token)
+            .OrderByDescending(t => t.Length)
+            .Select(System.Text.RegularExpressions.Regex.Escape)),
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static readonly Dictionary<string, Func<DateTime, string?, string>> TokenLookup =
+        Tokens.ToDictionary(t => t.Token, t => t.Resolver, StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Resolves all @-tokens against the given reference time and optional original filename.</summary>
     public static string Resolve(string template, DateTime? referenceTime = null, string? originalFileName = null)
     {
         if (string.IsNullOrEmpty(template)) return template;
 
         var dt = referenceTime ?? DateTime.Now;
-        var result = template;
-
-        // Longest-first order prevents partial-token collisions (e.g. @MM before @M)
-        foreach (var (token, resolver) in Tokens)
-        {
-            if (result.Contains(token, StringComparison.OrdinalIgnoreCase))
-            {
-                // Preserve original casing of the rest of the string
-                result = ReplaceIgnoreCase(result, token, resolver(dt, originalFileName));
-            }
-        }
-
-        return result;
+        return TokenRegex.Replace(template, m => TokenLookup[m.Value](dt, originalFileName));
     }
 
     /// <summary>
@@ -85,21 +93,18 @@ public static class WildcardEngine
         // First resolve date/time tokens so e.g. "Report_@MM@DD*.csv" becomes "Report_0407*.csv"
         var resolved = Resolve(pattern, referenceTime);
 
-        // Then convert glob syntax (* and ?) to regex
-        var regexStr = "^" + System.Text.RegularExpressions.Regex.Escape(resolved)
-                                  .Replace(@"\*", ".*")
-                                  .Replace(@"\?", ".") + "$";
+        if (_regexCache.Count >= MaxCachedPatterns)
+            _regexCache.Clear();
 
-        return new System.Text.RegularExpressions.Regex(regexStr,
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
-            System.Text.RegularExpressions.RegexOptions.Compiled);
-    }
-
-    private static string ReplaceIgnoreCase(string input, string oldValue, string newValue)
-    {
-        int index = input.IndexOf(oldValue, StringComparison.OrdinalIgnoreCase);
-        if (index < 0) return input;
-        return input[..index] + newValue + ReplaceIgnoreCase(input[(index + oldValue.Length)..], oldValue, newValue);
+        return _regexCache.GetOrAdd(resolved, static key =>
+        {
+            var regexStr = "^" + System.Text.RegularExpressions.Regex.Escape(key)
+                                      .Replace(@"\*", ".*")
+                                      .Replace(@"\?", ".") + "$";
+            return new System.Text.RegularExpressions.Regex(regexStr,
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        });
     }
 
     /// <summary>Returns a preview string showing what all tokens resolve to right now.</summary>

@@ -1,0 +1,16 @@
+# Line endings: stored as LF in the repository, checked out as CRLF on Windows.
+* text=auto
+
+*.cs       text eol=crlf
+*.csproj   text eol=crlf
+*.sln      text eol=crlf
+*.slnx     text eol=crlf
+*.resx     text eol=crlf
+*.config   text eol=crlf
+*.json     text eol=crlf
+*.md       text eol=crlf
+*.sh       text eol=lf
+
+*.ico      binary
+*.png      binary
+*.db       binary
